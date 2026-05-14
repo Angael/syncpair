@@ -1,1 +1,27 @@
 /target
+
+# Local environment files
+.env
+.env.*
+
+# Local config copies
+syncs.toml
+
+# Credential and key material
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.jks
+*.kdbx
+
+# Local database artifacts
+*.db
+*.sqlite
+*.sqlitedb
+
+# OS/editor noise
+.DS_Store
+*.log
