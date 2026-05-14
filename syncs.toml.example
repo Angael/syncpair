@@ -1,0 +1,9 @@
+remote = "onedrive"
+
+[[sync]]
+local = "~/notes"
+remote = "notes"
+
+[[sync]]
+local = "~/.config/fish"
+remote = "Backups/dotfiles/fish"
