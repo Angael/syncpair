@@ -1,104 +1,67 @@
 # syncpair
 
-Minimal Rust wrapper around `rclone bisync` for personal two-way backups on Arch/CatchyOS machines.
+Rust wrapper around `rclone bisync` for personal sync jobs.
 
-## What It Does
+## Develop
 
-- reads sync pairs from `~/.config/syncpair/syncs.toml`
-- runs `rclone bisync` under the hood
-- proxies live `rclone` output to the terminal
-- supports normal sync, dry-run preview, and resync
-- keeps dated trash backups for real sync runs
-- writes logs under `~/.local/state/syncpair/`
-- shows desktop notifications through `notify-send`
-- opens config and log files with `code`
-- installs or removes a `systemd --user` timer for daily syncs
-
-## Requirements
-
-Required runtime commands:
+Requirements:
 
 - `rclone`
 - `notify-send`
-- `code`
 - `systemctl`
+- `code` for `Edit Config`
+- `less` for `View Logs`
 
-`xdg-open` or `dolphin` is used for opening the trash directory.
+Run in dev mode:
 
-## Config
+```bash
+cargo run
+```
 
-Path:
+The config file lives at:
 
 ```text
 ~/.config/syncpair/syncs.toml
 ```
 
-Example:
+## Test
 
-```toml
-remote = "onedrive"
-
-[[sync]]
-local = "~/notes"
-remote = "notes"
-
-[[sync]]
-local = "~/.config/fish"
-remote = "Backups/dotfiles/fish"
+```bash
+cargo check
+cargo test
 ```
 
-## Usage
+You can also test the app manually with:
 
-Interactive menu:
+```bash
+cargo run
+```
+
+## Install
+
+Build:
+
+```bash
+cargo build --release
+```
+
+Install the binary to the path used by the timer:
+
+```bash
+sudo install -m 755 target/release/syncpair /usr/bin/syncpair
+```
+
+Run the app:
 
 ```bash
 syncpair
 ```
 
-Direct commands:
+If you use the daily timer, install or reinstall it from the app after updating `/usr/bin/syncpair`.
+
+To test the timer manually without waiting for the daily schedule:
 
 ```bash
-syncpair show-config
-syncpair edit-config
-syncpair view-logs
-syncpair open-trash
-syncpair sync
-syncpair sync --dry-run
-syncpair resync --mode newer
-syncpair resync --dry-run --mode older
-syncpair timer status
-syncpair timer install
-syncpair timer remove
+systemctl --user start syncpair.service
+journalctl --user -u syncpair.service --since "10 minutes ago"
 ```
-
-## Timer Behavior
-
-The installed systemd user service runs:
-
-```text
-/usr/bin/syncpair daily-sync
-```
-
-That path is intentional.
-
-Why:
-
-- when installed from a package, `/usr/bin/syncpair` is the stable binary path
-- using the currently running binary path would capture temporary dev paths like `target/debug/syncpair`
-- those dev paths can disappear after rebuilds or cleanup, which would break the timer later
-
-## Build
-
-```bash
-cargo build
-```
-
-## Packaging
-
-For AUR / `paru -S syncpair`, see `PUBLISHING.md`.
-
-There is also a starter `PKGBUILD` template in `packaging/PKGBUILD`.
-
-## License
-
-This project is licensed under the Unlicense.

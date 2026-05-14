@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow, bail};
-use dialoguer::{Confirm, theme::ColorfulTheme};
+use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::process::{Command, ExitStatus};
 
@@ -27,14 +28,6 @@ pub fn handle_timer_command(paths: &AppPaths, command: TimerCommand) -> Result<(
 }
 
 pub fn install_timer(paths: &AppPaths) -> Result<()> {
-    if !Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt("Install daily syncpair systemd timer for Normal Sync?")
-        .default(true)
-        .interact()?
-    {
-        return Ok(());
-    }
-
     fs::create_dir_all(&paths.systemd_dir)?;
 
     fs::write(
@@ -66,6 +59,7 @@ WantedBy=timers.target
 ",
     )?;
 
+    import_user_session_environment()?;
     run_systemctl(["--user", "daemon-reload"])?;
     run_systemctl(["--user", "enable", "--now", TIMER_FILE_NAME])?;
     log_line(paths, "success", "Installed daily timer")?;
@@ -73,14 +67,6 @@ WantedBy=timers.target
 }
 
 pub fn remove_timer(paths: &AppPaths) -> Result<()> {
-    if !Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt("Remove syncpair daily systemd timer?")
-        .default(false)
-        .interact()?
-    {
-        return Ok(());
-    }
-
     let _ = run_systemctl(["--user", "disable", "--now", TIMER_FILE_NAME]);
     remove_if_exists(&paths.service_file)?;
     remove_if_exists(&paths.timer_file)?;
@@ -104,6 +90,31 @@ pub fn timer_is_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn import_user_session_environment() -> Result<()> {
+    const SESSION_VARS: &[&str] = &[
+        "DBUS_SESSION_BUS_ADDRESS",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XAUTHORITY",
+        "XDG_CURRENT_DESKTOP",
+        "XDG_RUNTIME_DIR",
+    ];
+
+    let vars = SESSION_VARS
+        .iter()
+        .copied()
+        .filter(|name| env::var_os(name).is_some())
+        .collect::<Vec<_>>();
+
+    if vars.is_empty() {
+        return Ok(());
+    }
+
+    run_systemctl_import_environment(&vars)?;
+    let _ = run_dbus_update_activation_environment(&vars);
+    Ok(())
+}
+
 fn systemctl_output<const N: usize>(args: [&str; N]) -> Result<String> {
     let output = Command::new("systemctl").args(args).output()?;
     if output.status.success() {
@@ -115,6 +126,32 @@ fn systemctl_output<const N: usize>(args: [&str; N]) -> Result<String> {
 
 fn run_systemctl<const N: usize>(args: [&str; N]) -> Result<()> {
     let status = Command::new("systemctl").args(args).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!(exit_status_message(status)))
+    }
+}
+
+fn run_systemctl_import_environment(vars: &[&str]) -> Result<()> {
+    let status = Command::new("systemctl")
+        .args(["--user", "import-environment"])
+        .args(vars)
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!(exit_status_message(status)))
+    }
+}
+
+fn run_dbus_update_activation_environment(vars: &[&str]) -> Result<()> {
+    let status = Command::new("dbus-update-activation-environment")
+        .arg("--systemd")
+        .args(vars.iter().map(OsStr::new))
+        .status()?;
+
     if status.success() {
         Ok(())
     } else {
