@@ -24,6 +24,12 @@ The config file lives at:
 ~/.config/syncpair/syncs.toml
 ```
 
+Remote selection note:
+
+- Current sync runs use the `remote` value from `syncs.toml`.
+- On first run, the app still generates a starter config with a hardcoded `remote = "onedrive"`.
+- A proper first-run remote setup flow, and an easier way to change the remote later, are planned for a later update.
+
 ## Test
 
 ```bash

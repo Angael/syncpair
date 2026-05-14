@@ -88,6 +88,7 @@ Have these ready:
 Also recommended:
 
 - make the default config path and runtime dependencies clear in `README.md`
+- make it clear that first-run remote setup is not implemented yet and the starter config still hardcodes `onedrive`
 - mention required external tools: `rclone`, `notify-send`, `code`
 - keep `Cargo.lock` committed so packaging stays reproducible
 
@@ -162,6 +163,8 @@ Notes:
 
 - this repo currently expects `code` to be present and treats it as required
 - the current timer generation logic assumes packaged installs provide `/usr/bin/syncpair`
+- the app does read the configured remote from `syncs.toml`, but first-run setup still writes a hardcoded `remote = "onedrive"`
+- a first-run remote chooser and an easier remote-change flow are planned work for later
 - if you later install desktop files, man pages, or systemd user templates, package them too
 
 ## Generate `.SRCINFO`
