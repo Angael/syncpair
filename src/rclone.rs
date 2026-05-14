@@ -48,13 +48,10 @@ pub fn run_sync_command(paths: &AppPaths, mode: RunMode, dry_run: bool, ask_conf
     validate_config(&config)?;
 
     if ask_confirm && !dry_run {
-        let prompt = match mode {
-            RunMode::Normal => "Normal sync can propagate changes and move deletions into dated trash. Continue?",
-            RunMode::Resync(_) => "Resync can overwrite different versions on both sides. Continue?",
-        };
+        let prompt = confirm_prompt(&config, mode);
 
         if !dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
-            .with_prompt(prompt)
+            .with_prompt(&prompt)
             .default(false)
             .interact()?
         {
@@ -85,6 +82,22 @@ pub fn run_sync_command(paths: &AppPaths, mode: RunMode, dry_run: bool, ask_conf
     notify("Task Finished", "Your backup is complete.", false)?;
     log_line(paths, "success", &format!("{label} finished successfully"))?;
     Ok(())
+}
+
+fn confirm_prompt(config: &crate::config::Config, mode: RunMode) -> String {
+    let warning = match mode {
+        RunMode::Normal => "Normal sync can propagate changes and move deletions into dated trash.",
+        RunMode::Resync(_) => "Resync can overwrite different versions on both sides.",
+    };
+
+    let targets = config
+        .sync
+        .iter()
+        .map(|entry| format!("{} -> {}:{}", entry.local, config.remote, entry.remote))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!("Configured syncs:\n{targets}\n\n{warning}\nContinue?")
 }
 
 fn run_one_sync(paths: &AppPaths, remote_name: &str, entry: &SyncEntry, mode: RunMode, dry_run: bool) -> Result<()> {
