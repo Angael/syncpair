@@ -1,10 +1,8 @@
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Local;
-use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::fs;
+use std::io::IsTerminal;
 use std::process::{Command, ExitStatus, Stdio};
-use std::thread;
 
 use crate::config::{SyncEntry, load_config, validate_config};
 use crate::logs::log_line;
@@ -108,20 +106,16 @@ fn run_one_sync(paths: &AppPaths, remote_name: &str, entry: &SyncEntry, mode: Ru
     command.arg("bisync");
     command.arg(&local_path);
     command.arg(&remote_target);
-    command.args([
-        "-P",
-        "--compare",
-        "size,modtime",
-        "--max-delete",
-        "40",
-        "--conflict-resolve",
-        "newer",
-        "--conflict-loser",
-        "num",
-    ]);
+    command.args(["--compare", "size,modtime", "--max-delete", "40", "--conflict-resolve", "newer", "--conflict-loser", "num"]);
     command.arg("--create-empty-src-dirs");
     command.arg("--recover");
     command.arg("--resilient");
+
+    if std::io::stdout().is_terminal() {
+        command.arg("-P");
+        command.stdout(Stdio::inherit());
+        command.stderr(Stdio::inherit());
+    }
 
     if dry_run {
         command.arg("--dry-run");
@@ -142,51 +136,12 @@ fn run_one_sync(paths: &AppPaths, remote_name: &str, entry: &SyncEntry, mode: Ru
         command.arg(resync_mode.as_str());
     }
 
-    run_and_proxy(command, &paths.log_file)
-}
-
-fn run_and_proxy(mut command: Command, log_file: &Path) -> Result<()> {
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
-
-    let mut child = command.spawn().context("Failed to start command")?;
-    let stdout = child.stdout.take().context("Missing stdout pipe")?;
-    let stderr = child.stderr.take().context("Missing stderr pipe")?;
-
-    let log_out = log_file.to_path_buf();
-    let out_handle = thread::spawn(move || proxy_stream(stdout, false, &log_out));
-
-    let log_err = log_file.to_path_buf();
-    let err_handle = thread::spawn(move || proxy_stream(stderr, true, &log_err));
-
-    let status = child.wait()?;
-    join_proxy(out_handle)?;
-    join_proxy(err_handle)?;
-
+    let status = command.status().context("Failed to start command")?;
     if status.success() {
         Ok(())
     } else {
         Err(anyhow!(exit_status_message(status)))
     }
-}
-
-fn proxy_stream<R: std::io::Read>(reader: R, stderr: bool, log_file: &Path) -> Result<()> {
-    let mut log = OpenOptions::new().create(true).append(true).open(log_file)?;
-    for line in BufReader::new(reader).lines() {
-        let line = line?;
-        if stderr {
-            eprintln!("{line}");
-        } else {
-            println!("{line}");
-        }
-        writeln!(log, "{} [rclone] {}", Local::now().to_rfc3339(), line)?;
-    }
-    Ok(())
-}
-
-fn join_proxy(handle: thread::JoinHandle<Result<()>>) -> Result<()> {
-    handle.join().map_err(|_| anyhow!("Failed to join output thread"))??;
-    Ok(())
 }
 
 fn exit_status_message(status: ExitStatus) -> String {
