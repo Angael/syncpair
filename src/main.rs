@@ -11,11 +11,11 @@ use clap::{Parser, Subcommand};
 
 use crate::config::show_config;
 use crate::logs::{ensure_parent_dirs, open_log};
-use crate::paths::{APP_NAME, app_paths};
-use crate::rclone::{RunMode, run_sync_command};
-use crate::timer::{TimerCommand, handle_timer_command};
-use crate::ui::{CliResyncMode, interactive_menu};
-use crate::utils::{notify, open_in_code, open_trash};
+use crate::paths::{app_paths, APP_NAME};
+use crate::rclone::{run_sync_command, RunMode};
+use crate::timer::{handle_timer_command, TimerCommand};
+use crate::ui::{interactive_menu, CliResyncMode};
+use crate::utils::{cleanup_trash, notify, open_in_code, open_trash};
 
 #[derive(Parser)]
 #[command(name = APP_NAME, version, about = "Minimal rclone bisync wrapper")]
@@ -67,13 +67,16 @@ fn run() -> Result<()> {
     let paths = app_paths()?;
 
     ensure_parent_dirs(&paths)?;
+    cleanup_trash(&paths.trash_dir)?;
 
     match cli.command {
         Some(Commands::ShowConfig) => show_config(&paths),
         Some(Commands::EditConfig) => open_in_code(&paths.config_file),
         Some(Commands::ViewLogs) => open_log(&paths),
         Some(Commands::OpenTrash) => open_trash(&paths),
-        Some(Commands::Sync { dry_run }) => run_sync_command(&paths, RunMode::Normal, dry_run, true),
+        Some(Commands::Sync { dry_run }) => {
+            run_sync_command(&paths, RunMode::Normal, dry_run, true)
+        }
         Some(Commands::Resync { dry_run, mode }) => {
             let mode = mode.unwrap_or(CliResyncMode::Newer).into();
             run_sync_command(&paths, RunMode::Resync(mode), dry_run, true)

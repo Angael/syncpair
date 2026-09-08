@@ -1,11 +1,11 @@
-use anyhow::{Result, anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::process::{Command, ExitStatus};
 
 use crate::logs::log_line;
-use crate::paths::{APP_NAME, AppPaths, TIMER_FILE_NAME};
+use crate::paths::{AppPaths, APP_NAME, TIMER_FILE_NAME};
 use crate::utils::remove_if_exists;
 
 const INSTALLED_BINARY_PATH: &str = "/usr/bin/syncpair";
@@ -76,8 +76,10 @@ pub fn remove_timer(paths: &AppPaths) -> Result<()> {
 }
 
 pub fn timer_status_line(paths: &AppPaths) -> String {
-    let enabled = systemctl_output(["--user", "is-enabled", TIMER_FILE_NAME]).unwrap_or_else(|_| "not installed".into());
-    let active = systemctl_output(["--user", "is-active", TIMER_FILE_NAME]).unwrap_or_else(|_| "inactive".into());
+    let enabled = systemctl_output(["--user", "is-enabled", TIMER_FILE_NAME])
+        .unwrap_or_else(|_| "not installed".into());
+    let active = systemctl_output(["--user", "is-active", TIMER_FILE_NAME])
+        .unwrap_or_else(|_| "inactive".into());
     format!(
         "Daily Backup: {enabled} | Timer: {active} | Config: {} | Binary: /usr/bin/{APP_NAME}",
         paths.config_file.display()

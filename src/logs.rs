@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use chrono::Local;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -27,7 +27,13 @@ pub fn touch_file(path: &Path) -> Result<()> {
 pub fn log_line(paths: &AppPaths, level: &str, message: &str) -> Result<()> {
     touch_file(&paths.log_file)?;
     let mut file = OpenOptions::new().append(true).open(&paths.log_file)?;
-    writeln!(file, "{} [{}] {}", Local::now().to_rfc3339(), level, message)?;
+    writeln!(
+        file,
+        "{} [{}] {}",
+        Local::now().to_rfc3339(),
+        level,
+        message
+    )?;
     Ok(())
 }
 

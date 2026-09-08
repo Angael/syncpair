@@ -1,4 +1,5 @@
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
+use chrono::{Local, Months, NaiveDate};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,7 +23,10 @@ pub fn notify(summary: &str, body: &str, error: bool) -> Result<()> {
         command.env("XDG_RUNTIME_DIR", &runtime_dir);
         if env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
             let bus_address = runtime_dir.join("bus");
-            command.env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}", bus_address.display()));
+            command.env(
+                "DBUS_SESSION_BUS_ADDRESS",
+                format!("unix:path={}", bus_address.display()),
+            );
         }
     }
 
@@ -70,6 +74,55 @@ pub fn remove_if_exists(path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn cleanup_trash(trash_dir: &Path) -> Result<()> {
+    if !trash_dir.exists() {
+        return Ok(());
+    }
+
+    let cutoff = Local::now()
+        .date_naive()
+        .checked_sub_months(Months::new(2))
+        .context("Could not calculate trash retention cutoff")?;
+
+    for entry in fs::read_dir(trash_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+
+        let dated_before_cutoff = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| NaiveDate::parse_from_str(name, "%Y-%m-%d").ok())
+            .is_some_and(|date| date < cutoff);
+
+        if dated_before_cutoff {
+            fs::remove_dir_all(path)?;
+        } else {
+            remove_empty_dirs(&path)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn remove_empty_dirs(dir: &Path) -> Result<bool> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            remove_empty_dirs(&entry.path())?;
+        }
+    }
+
+    if fs::read_dir(dir)?.next().is_none() {
+        fs::remove_dir(dir)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 pub fn open_trash(paths: &AppPaths) -> Result<()> {
     fs::create_dir_all(&paths.trash_dir)?;
     try_open(["xdg-open", paths.trash_dir.to_string_lossy().as_ref()])
@@ -90,5 +143,40 @@ fn try_open<const N: usize>(args: [&str; N]) -> Result<()> {
         Ok(())
     } else {
         Err(anyhow!("{} exited unsuccessfully", args[0]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cleanup_trash;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn cleanup_removes_empty_and_expired_trash_directories() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let trash = std::env::temp_dir().join(format!("syncpair-cleanup-{unique}"));
+        let expired = trash.join("2000-01-01");
+        let recent = trash.join("2999-01-01");
+
+        fs::create_dir_all(expired.join("contains-data")).unwrap();
+        fs::write(expired.join("contains-data/file"), "old").unwrap();
+        fs::create_dir_all(recent.join("empty/nested")).unwrap();
+        fs::create_dir_all(recent.join("contains-data")).unwrap();
+        fs::write(recent.join("contains-data/file"), "keep").unwrap();
+
+        cleanup_trash(&trash).unwrap();
+
+        assert!(!expired.exists());
+        assert!(!recent.join("empty").exists());
+        assert_eq!(
+            fs::read_to_string(recent.join("contains-data/file")).unwrap(),
+            "keep"
+        );
+
+        fs::remove_dir_all(trash).unwrap();
     }
 }

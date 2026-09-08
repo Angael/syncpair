@@ -1,11 +1,11 @@
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use clap::ValueEnum;
-use dialoguer::{Select, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Select};
 
 use crate::config::show_config;
 use crate::logs::open_log;
 use crate::paths::AppPaths;
-use crate::rclone::{ResyncMode, RunMode, run_sync_command};
+use crate::rclone::{run_sync_command, ResyncMode, RunMode};
 use crate::timer::{install_timer, remove_timer, timer_is_enabled, timer_status_line};
 use crate::utils::{open_in_code, open_trash};
 
@@ -27,14 +27,12 @@ impl From<CliResyncMode> for ResyncMode {
 pub fn interactive_menu(paths: &AppPaths) -> Result<()> {
     let timer_enabled = timer_is_enabled();
     let mut items = vec![
-        "Show Config",
+        "Normal Sync",
+        "Resync",
         "Edit Config",
+        "Show Config",
         "View Logs",
         "Open Trash",
-        "Normal Sync (preview)",
-        "Normal Sync",
-        "Resync (preview)",
-        "Resync",
     ];
 
     if timer_enabled {
@@ -42,10 +40,11 @@ pub fn interactive_menu(paths: &AppPaths) -> Result<()> {
     } else {
         items.push("Install Daily Timer");
     }
+    items.push("Daily Timer Status");
+    items.push("Normal Sync (preview)");
+    items.push("Resync (preview)");
 
     items.push("Quit");
-
-    println!("{}", timer_status_line(paths));
 
     let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Select action")
@@ -54,16 +53,22 @@ pub fn interactive_menu(paths: &AppPaths) -> Result<()> {
         .interact()?;
 
     match items[selection] {
-        "Show Config" => show_config(paths),
+        "Normal Sync" => run_sync_command(paths, RunMode::Normal, false, true),
+        "Resync" => run_sync_command(paths, RunMode::Resync(prompt_resync_mode()?), false, true),
         "Edit Config" => open_in_code(&paths.config_file),
+        "Show Config" => show_config(paths),
         "View Logs" => open_log(paths),
         "Open Trash" => open_trash(paths),
-        "Normal Sync (preview)" => run_sync_command(paths, RunMode::Normal, true, true),
-        "Normal Sync" => run_sync_command(paths, RunMode::Normal, false, true),
-        "Resync (preview)" => run_sync_command(paths, RunMode::Resync(prompt_resync_mode()?), true, true),
-        "Resync" => run_sync_command(paths, RunMode::Resync(prompt_resync_mode()?), false, true),
         "Remove Daily Timer" => remove_timer(paths),
         "Install Daily Timer" => install_timer(paths),
+        "Daily Timer Status" => {
+            println!("{}", timer_status_line(paths));
+            Ok(())
+        }
+        "Normal Sync (preview)" => run_sync_command(paths, RunMode::Normal, true, true),
+        "Resync (preview)" => {
+            run_sync_command(paths, RunMode::Resync(prompt_resync_mode()?), true, true)
+        }
         "Quit" => Ok(()),
         _ => bail!("Unknown selection"),
     }
