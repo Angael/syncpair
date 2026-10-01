@@ -68,10 +68,10 @@ Build:
 cargo build --release
 ```
 
-Install the binary to the path used by the timer:
+Install the binary (to `/usr/bin`, the path the timer uses), the app-menu entry, and the icon:
 
 ```bash
-sudo install -m 755 target/release/syncpair /usr/bin/syncpair
+sudo packaging/install.sh
 ```
 
 Run the app:
