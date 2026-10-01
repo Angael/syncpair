@@ -1,35 +1,34 @@
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
+use notify_rust::{Notification, Timeout};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::thread::{self, JoinHandle};
 
-use crate::logs::touch_file;
-use crate::paths::AppPaths;
+/// Themed icon name; installed into the hicolor theme from `packaging/icons/`.
+pub const APP_ICON: &str = "syncpair";
 
-pub fn notify(summary: &str, body: &str, error: bool) -> Result<()> {
-    let mut command = Command::new("notify-send");
+/// Sends a desktop notification over D-Bus on a background thread.
+///
+/// At boot the notification daemon may not be up yet and D-Bus activation can block for
+/// tens of seconds; running off-thread keeps that from delaying the sync itself.
+/// Join the handle when the process is about to exit and the notification must be sent.
+pub fn notify(summary: &str, body: &str, error: bool) -> JoinHandle<()> {
+    let mut notification = Notification::new();
+    notification
+        .appname("Syncpair")
+        .icon(APP_ICON)
+        .summary(summary)
+        .body(body);
     if error {
-        command.args(["-t", "10000"]);
+        notification.timeout(Timeout::Milliseconds(10_000));
     }
 
-    // User services launched by systemd may miss the session bus environment.
-    let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .or_else(dirs::runtime_dir);
-
-    if let Some(runtime_dir) = runtime_dir {
-        command.env("XDG_RUNTIME_DIR", &runtime_dir);
-        if env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
-            let bus_address = runtime_dir.join("bus");
-            command.env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}", bus_address.display()));
+    thread::spawn(move || {
+        if let Err(error) = notification.show() {
+            eprintln!("Failed to show notification: {error}");
         }
-    }
-
-    let status = command.arg(summary).arg(body).status();
-    match status {
-        Ok(_) | Err(_) => Ok(()),
-    }
+    })
 }
 
 pub fn require_command(command: &str) -> Result<()> {
@@ -53,6 +52,20 @@ pub fn expand_home(path: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(path))
 }
 
+/// Inverse of [`expand_home`] for display and storage: `/home/u/notes` -> `~/notes`.
+pub fn contract_home(path: &Path) -> String {
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(rest) = path.strip_prefix(&home) {
+            return if rest.as_os_str().is_empty() {
+                "~".into()
+            } else {
+                format!("~/{}", rest.display())
+            };
+        }
+    }
+    path.display().to_string()
+}
+
 pub fn path_slug(path: &str) -> String {
     path.chars()
         .map(|ch| match ch {
@@ -70,25 +83,17 @@ pub fn remove_if_exists(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn open_trash(paths: &AppPaths) -> Result<()> {
-    fs::create_dir_all(&paths.trash_dir)?;
-    try_open(["xdg-open", paths.trash_dir.to_string_lossy().as_ref()])
-        .or_else(|_| try_open(["dolphin", paths.trash_dir.to_string_lossy().as_ref()]))
-}
-
-pub fn open_in_code(path: &Path) -> Result<()> {
-    touch_file(path)?;
-    try_open(["code", path.to_string_lossy().as_ref()])
-}
-
-fn try_open<const N: usize>(args: [&str; N]) -> Result<()> {
-    let status = Command::new(args[0])
-        .args(&args[1..])
-        .status()
-        .with_context(|| format!("Failed to run {}", args[0]))?;
-    if status.success() {
-        Ok(())
+pub fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
     } else {
-        Err(anyhow!("{} exited unsuccessfully", args[0]))
+        format!("{value:.1} {}", UNITS[unit])
     }
 }

@@ -1,16 +1,34 @@
 # syncpair
 
-Rust wrapper around `rclone bisync` for personal sync jobs.
+Desktop app around `rclone bisync` for personal two-way backups.
+
+Running `syncpair` opens a native window (egui, Wayland and X11) with four pages:
+
+- **Overview**: last sync result, *Sync now* with live per-folder progress and cancel, preview/resync actions, the daily schedule toggle, and recent run history.
+- **Folders**: edit the remote and the folder pairs in place, with a folder picker; saving keeps comments in `syncs.toml`.
+- **Activity**: the sync log, filterable by runs/problems and searchable.
+- **Trash**: files a sync replaced or deleted, grouped by day, with per-file restore.
+
+Everything happens inside the app; it never launches an editor, pager, or file manager.
+Notifications go straight to the desktop over D-Bus.
+
+Headless commands, used by the daily timer and scripts:
+
+```bash
+syncpair sync [--dry-run]
+syncpair resync [--dry-run] [--mode newer|older]
+syncpair timer install|remove|status
+syncpair show-config
+syncpair daily-sync      # what syncpair.service runs
+```
 
 ## Develop
 
 Requirements:
 
 - `rclone`
-- `notify-send`
-- `systemctl`
-- `code` for `Edit Config`
-- `less` for `View Logs`
+- `systemctl` (user session) for the daily timer
+- `xdg-desktop-portal` for the folder picker (optional; paths can be typed)
 
 Run in dev mode:
 
@@ -26,9 +44,8 @@ The config file lives at:
 
 Remote selection note:
 
-- Current sync runs use the `remote` value from `syncs.toml`.
+- Sync runs use the `remote` value from `syncs.toml`; change it on the **Folders** page.
 - On first run, the app still generates a starter config with a hardcoded `remote = "onedrive"`.
-- A proper first-run remote setup flow, and an easier way to change the remote later, are planned for a later update.
 
 ## Test
 
@@ -51,10 +68,10 @@ Build:
 cargo build --release
 ```
 
-Install the binary to the path used by the timer:
+Install the binary (to `/usr/bin`, the path the timer uses), the app-menu entry, and the icon:
 
 ```bash
-sudo install -m 755 target/release/syncpair /usr/bin/syncpair
+sudo packaging/install.sh
 ```
 
 Run the app:

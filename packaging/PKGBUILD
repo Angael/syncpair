@@ -1,11 +1,13 @@
 pkgname=syncpair
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
-pkgdesc="Minimal rclone bisync wrapper for personal two-way backups"
+pkgdesc="Desktop app for personal two-way rclone bisync backups"
 arch=('x86_64')
 url="https://github.com/YOUR_USER/syncpair"
 license=('Unlicense')
-depends=('rclone' 'libnotify' 'code')
+# winit/glow load the windowing and GL libraries at runtime.
+depends=('rclone' 'hicolor-icon-theme' 'libglvnd' 'libxkbcommon' 'wayland' 'libx11' 'libxcursor' 'libxi' 'libxrandr')
+optdepends=('xdg-desktop-portal: native folder picker in the Folders editor')
 makedepends=('cargo')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 b2sums=('REPLACE_WITH_REAL_SUM')
@@ -31,4 +33,9 @@ package() {
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 PUBLISHING.md "$pkgdir/usr/share/doc/$pkgname/PUBLISHING.md"
   install -Dm644 syncs.toml.example "$pkgdir/usr/share/doc/$pkgname/syncs.toml.example"
+  install -Dm644 packaging/syncpair.desktop "$pkgdir/usr/share/applications/syncpair.desktop"
+  for size in 16 32 48 64 128 256 512; do
+    install -Dm644 "packaging/icons/hicolor/${size}x${size}/apps/syncpair.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/syncpair.png"
+  done
 }
