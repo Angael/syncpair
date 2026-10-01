@@ -5,7 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread::{self, JoinHandle};
 
-pub const APP_ICON: &str = "folder-sync";
+/// Themed icon name; installed into the hicolor theme from `packaging/icons/`.
+pub const APP_ICON: &str = "syncpair";
 
 /// Sends a desktop notification over D-Bus on a background thread.
 ///

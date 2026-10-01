@@ -28,13 +28,20 @@ use self::trash_page::TrashPage;
 /// How often systemd timer/service state is re-read while the window is open.
 const TIMER_POLL: Duration = Duration::from_secs(15);
 
+/// Window icon for X11; on Wayland the compositor takes it from `syncpair.desktop` via the app id.
+const WINDOW_ICON_PNG: &[u8] = include_bytes!("../../packaging/icons/hicolor/256x256/apps/syncpair.png");
+
 pub fn run(paths: AppPaths) -> Result<()> {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Syncpair")
+        .with_app_id("syncpair")
+        .with_inner_size([960.0, 680.0])
+        .with_min_inner_size([720.0, 480.0]);
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(WINDOW_ICON_PNG) {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Syncpair")
-            .with_app_id("syncpair")
-            .with_inner_size([960.0, 680.0])
-            .with_min_inner_size([720.0, 480.0]),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(

@@ -131,7 +131,7 @@ pkgdesc="Desktop app for personal two-way rclone bisync backups"
 arch=('x86_64')
 url="https://github.com/YOUR_USER/syncpair"
 license=('Unlicense')
-depends=('rclone' 'libglvnd' 'libxkbcommon' 'wayland' 'libx11' 'libxcursor' 'libxi' 'libxrandr')
+depends=('rclone' 'hicolor-icon-theme' 'libglvnd' 'libxkbcommon' 'wayland' 'libx11' 'libxcursor' 'libxi' 'libxrandr')
 optdepends=('xdg-desktop-portal: native folder picker in the Folders editor')
 makedepends=('cargo')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
@@ -158,6 +158,10 @@ package() {
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 syncs.toml.example "$pkgdir/usr/share/doc/$pkgname/syncs.toml.example"
   install -Dm644 packaging/syncpair.desktop "$pkgdir/usr/share/applications/syncpair.desktop"
+  for size in 16 32 48 64 128 256 512; do
+    install -Dm644 "packaging/icons/hicolor/${size}x${size}/apps/syncpair.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/syncpair.png"
+  done
 }
 ```
 
