@@ -17,8 +17,8 @@ These are important and already reflected in the codebase:
 - config path: `~/.config/syncpair/syncs.toml`
 - state/log path: `~/.local/state/syncpair/`
 - license: `Unlicense`
-- required runtime commands: `rclone`, `notify-send`, `code`, `systemctl`
-- required Arch runtime package dependencies for packaging: `rclone`, `libnotify`, `code`
+- required runtime commands: `rclone`, `systemctl`
+- required Arch runtime package dependencies for packaging: `rclone` plus the windowing/GL libraries egui loads at runtime (`libglvnd`, `libxkbcommon`, `wayland`, `libx11`, `libxcursor`, `libxi`, `libxrandr`); `xdg-desktop-portal` optional for the folder picker
 - starter package template exists at `packaging/PKGBUILD`
 
 ## Why The Timer Uses `/usr/bin/syncpair`
@@ -89,7 +89,7 @@ Also recommended:
 
 - make the default config path and runtime dependencies clear in `README.md`
 - make it clear that first-run remote setup is not implemented yet and the starter config still hardcodes `onedrive`
-- mention required external tools: `rclone`, `notify-send`, `code`
+- mention required external tools: `rclone`, `systemctl`
 - keep `Cargo.lock` committed so packaging stays reproducible
 
 ## Release Steps
@@ -115,7 +115,7 @@ Example package metadata direction:
 - package name: `syncpair`
 - binary name: `syncpair`
 - build dependency: `cargo`
-- runtime dependencies: `rclone`, `libnotify`, `code`
+- runtime dependencies: `rclone`, `libglvnd`, `libxkbcommon`, `wayland`, `libx11`, `libxcursor`, `libxi`, `libxrandr`
 - license: `Unlicense`
 - installed binary path for timer use: `/usr/bin/syncpair`
 
@@ -125,13 +125,14 @@ Minimal `PKGBUILD` shape:
 
 ```bash
 pkgname=syncpair
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
-pkgdesc="Minimal rclone bisync wrapper for personal two-way backups"
+pkgdesc="Desktop app for personal two-way rclone bisync backups"
 arch=('x86_64')
 url="https://github.com/YOUR_USER/syncpair"
 license=('Unlicense')
-depends=('rclone' 'libnotify' 'code')
+depends=('rclone' 'libglvnd' 'libxkbcommon' 'wayland' 'libx11' 'libxcursor' 'libxi' 'libxrandr')
+optdepends=('xdg-desktop-portal: native folder picker in the Folders editor')
 makedepends=('cargo')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 b2sums=('REPLACE_WITH_REAL_SUM')
@@ -156,16 +157,17 @@ package() {
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 syncs.toml.example "$pkgdir/usr/share/doc/$pkgname/syncs.toml.example"
+  install -Dm644 packaging/syncpair.desktop "$pkgdir/usr/share/applications/syncpair.desktop"
 }
 ```
 
 Notes:
 
-- this repo currently expects `code` to be present and treats it as required
+- the egui crates require rustc 1.92 or newer
 - the current timer generation logic assumes packaged installs provide `/usr/bin/syncpair`
-- the app does read the configured remote from `syncs.toml`, but first-run setup still writes a hardcoded `remote = "onedrive"`
-- a first-run remote chooser and an easier remote-change flow are planned work for later
-- if you later install desktop files, man pages, or systemd user templates, package them too
+- the app does read the configured remote from `syncs.toml` (editable on the Folders page), but first-run setup still writes a hardcoded `remote = "onedrive"`
+- a first-run remote chooser is planned work for later
+- `packaging/syncpair.desktop` is installed so the app shows up in the application menu
 
 ## Generate `.SRCINFO`
 
@@ -254,8 +256,8 @@ Do these before opening a fresh session or publishing:
 
 1. `cargo build`
 2. `cargo run`
-3. confirm `syncpair edit-config` opens VS Code via `code`
-4. confirm notifications work through `notify-send`
+3. confirm the window opens and the Folders page saves `syncs.toml` without losing comments
+4. confirm desktop notifications appear for `syncpair sync`
 5. confirm `syncpair timer install` writes a user service with `/usr/bin/syncpair daily-sync`
 6. test `makepkg -si` with the final `PKGBUILD`
 
