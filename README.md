@@ -62,7 +62,13 @@ cargo run
 
 ## Install
 
-Build:
+To test, build and install the working tree in one step (asks for your password through a desktop dialog when `sudo` would need one):
+
+```bash
+scripts/install-local.sh
+```
+
+Or do it by hand. Build:
 
 ```bash
 cargo build --release

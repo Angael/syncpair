@@ -1,8 +1,9 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::Local;
+use std::collections::VecDeque;
 use std::fs;
-use std::io::{BufRead, BufReader, IsTerminal, Read};
-use std::path::Path;
+use std::io::{self, BufRead, BufReader, IsTerminal, Read};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -10,12 +11,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::config::{load_config, validate_config, Config, SyncEntry};
-use crate::logs::log_line;
+use crate::logs::{log_failure, log_line};
 use crate::paths::AppPaths;
 use crate::utils::{expand_home, notify, path_slug, require_command};
 
 /// How long rclone gets to finish a graceful (SIGINT) shutdown before it is killed.
 const CANCEL_GRACE: Duration = Duration::from_secs(30);
+/// rclone output lines kept per folder and saved when it fails.
+const TRANSCRIPT_LIMIT: usize = 1_000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ResyncMode {
@@ -128,8 +131,9 @@ pub fn run_sync(
             .get(index)
             .ok_or_else(|| anyhow!("No sync entry #{index}"))?;
         on_event(SyncEvent::EntryStarted(index));
+        let mut transcript = VecDeque::new();
         let result = run_one_sync(
-            paths, &config.remote, entry, spec, cancel,
+            paths, &config.remote, entry, spec, cancel, &mut transcript,
             &mut |event| on_event(match event {
                 Line::Output(line) => SyncEvent::Output(line),
                 Line::Progress(fraction, line) => SyncEvent::Progress(index, fraction, line),
@@ -145,7 +149,8 @@ pub fn run_sync(
             Err(error) => {
                 failures += 1;
                 let message = format!("{error:#}");
-                log_line(paths, "error", &format!("{label} failed for {}: {message}", entry.local))?;
+                let transcript: Vec<String> = transcript.into();
+                log_failure(paths, &format!("{label} failed for {}: {message}", entry.local), &transcript)?;
                 on_event(SyncEvent::EntryFinished(index, Err(message)));
             }
         }
@@ -214,6 +219,7 @@ fn run_one_sync(
     entry: &SyncEntry,
     spec: RunSpec,
     cancel: &AtomicBool,
+    transcript: &mut VecDeque<String>,
     on_line: &mut dyn FnMut(Line),
 ) -> Result<()> {
     let local_path = expand_home(&entry.local)?;
@@ -227,7 +233,67 @@ fn run_one_sync(
         ));
     }
 
-    let mut command = bisync_command(paths, remote_name, entry, &local_path, spec)?;
+    let mut cleared_lock = false;
+    loop {
+        let command = bisync_command(paths, remote_name, entry, &local_path, spec)?;
+        match run_bisync(command, spec, cancel, transcript, on_line)? {
+            Attempt::Done => return Ok(()),
+            Attempt::Cancelled => bail!("Cancelled"),
+            Attempt::Failed { lock_file: Some(lock), .. } if !cleared_lock => {
+                let note = match lock_owner(&lock) {
+                    LockOwner::Running(pid) => bail!(
+                        "Another rclone bisync (PID {pid}) is still syncing this folder; try again once it finishes"
+                    ),
+                    LockOwner::Unknown => bail!(
+                        "A lock file from another bisync run blocks this folder and its owner could not be determined: {}",
+                        lock.display()
+                    ),
+                    LockOwner::Gone => "Lock file disappeared; retrying".to_string(),
+                    LockOwner::Stale(pid) => {
+                        match fs::remove_file(&lock) {
+                            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                                return Err(error).with_context(|| {
+                                    format!("Failed to remove stale lock file {}", lock.display())
+                                });
+                            }
+                            _ => {}
+                        }
+                        let note = format!(
+                            "Removed stale lock left by an interrupted run (PID {pid} is gone): {}",
+                            lock.display()
+                        );
+                        log_line(paths, "warn", &format!("{}: {note}", entry.local))?;
+                        format!("{note}; retrying")
+                    }
+                };
+                cleared_lock = true;
+                let line = format!("syncpair: {note}");
+                push_transcript(transcript, line.clone());
+                on_line(Line::Output(line));
+            }
+            Attempt::Failed { message, .. } => bail!(message),
+        }
+    }
+}
+
+enum Attempt {
+    Done,
+    Cancelled,
+    Failed {
+        message: String,
+        /// Lock file rclone refused to override (`prior lock file found: <path>`).
+        lock_file: Option<PathBuf>,
+    },
+}
+
+fn run_bisync(
+    mut command: Command,
+    spec: RunSpec,
+    cancel: &AtomicBool,
+    transcript: &mut VecDeque<String>,
+    on_line: &mut dyn FnMut(Line),
+) -> Result<Attempt> {
+    push_transcript(transcript, format!("$ {command:?}"));
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().context("Failed to start rclone")?;
 
@@ -237,20 +303,26 @@ fn run_one_sync(
         spawn_line_reader(child.stderr.take(), sender),
     ];
 
-    let mut last_error: Option<String> = None;
+    let mut errors = ErrorLines::default();
+    let mut lock_file: Option<PathBuf> = None;
     let mut interrupted_at: Option<Instant> = None;
     loop {
         match receiver.recv_timeout(Duration::from_millis(100)) {
             Ok(line) => {
+                let line = strip_ansi(&line);
                 let text = strip_log_prefix(&line);
-                if text.starts_with("ERROR") || text.contains("Bisync aborted") {
-                    last_error = Some(text.to_string());
+                errors.note(text);
+                if let Some((_, path)) = text.split_once("prior lock file found: ") {
+                    lock_file = Some(PathBuf::from(path.trim()));
                 }
                 match stats_fraction(text) {
                     Some(fraction) if spec.verbosity.progress => {
                         on_line(Line::Progress(fraction, text.to_string()))
                     }
-                    _ => on_line(Line::Output(line)),
+                    _ => {
+                        push_transcript(transcript, line.clone());
+                        on_line(Line::Output(line));
+                    }
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -265,17 +337,93 @@ fn run_one_sync(
     }
 
     let status = child.wait().context("Failed to wait for rclone")?;
-    if status.success() {
-        Ok(())
+    Ok(if status.success() {
+        Attempt::Done
     } else if interrupted_at.is_some() {
-        Err(anyhow!("Cancelled"))
+        Attempt::Cancelled
     } else {
         let base = exit_status_message(status);
-        Err(match last_error {
-            Some(detail) => anyhow!("{base}: {detail}"),
-            None => anyhow!(base),
-        })
+        let message = match errors.summary() {
+            Some(detail) => format!("{detail} ({base})"),
+            None => base,
+        };
+        Attempt::Failed { message, lock_file }
+    })
+}
+
+fn push_transcript(transcript: &mut VecDeque<String>, line: String) {
+    if transcript.len() == TRANSCRIPT_LIMIT {
+        transcript.pop_front();
     }
+    transcript.push_back(line);
+}
+
+/// Picks the line that best explains why rclone failed.
+#[derive(Default)]
+struct ErrorLines {
+    /// bisync's own verdict, e.g. `Failed to bisync: prior lock file found: …`.
+    verdict: Option<String>,
+    last_error: Option<String>,
+    /// `Bisync aborted. Please try again.` only says that it failed, not why.
+    aborted: Option<String>,
+}
+
+impl ErrorLines {
+    fn note(&mut self, text: &str) {
+        let message = strip_level(text);
+        if self.verdict.is_none()
+            && (message.starts_with("Failed to bisync") || message.starts_with("Bisync critical error"))
+        {
+            self.verdict = Some(message.to_string());
+        } else if message.starts_with("Bisync aborted") {
+            self.aborted = Some(message.to_string());
+        } else if text.starts_with("ERROR") || text.starts_with("CRITICAL") {
+            self.last_error = Some(message.to_string());
+        }
+    }
+
+    fn summary(self) -> Option<String> {
+        self.verdict.or(self.last_error).or(self.aborted)
+    }
+}
+
+enum LockOwner {
+    /// The rclone that wrote the lock is still running.
+    Running(u32),
+    /// The process that wrote the lock no longer exists.
+    Stale(u32),
+    /// The lock was removed in the meantime.
+    Gone,
+    Unknown,
+}
+
+/// bisync lock files are JSON like `{"Session":"…","PID":"448404","TimeRenewed":…}`.
+fn lock_owner(lock: &Path) -> LockOwner {
+    let raw = match fs::read_to_string(lock) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return LockOwner::Gone,
+        Err(_) => return LockOwner::Unknown,
+    };
+    match lock_pid(&raw) {
+        Some(pid) if process_is_rclone(pid) => LockOwner::Running(pid),
+        Some(pid) => LockOwner::Stale(pid),
+        None => LockOwner::Unknown,
+    }
+}
+
+fn lock_pid(raw: &str) -> Option<u32> {
+    let after_key = &raw[raw.find("\"PID\"")? + 5..];
+    let digits: String = after_key
+        .trim_start_matches([':', ' ', '"'])
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+/// A recycled PID belonging to another program does not hold the lock.
+fn process_is_rclone(pid: u32) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|name| name.trim() == "rclone")
 }
 
 fn bisync_command(
@@ -300,6 +448,8 @@ fn bisync_command(
         "--create-empty-src-dirs",
         "--recover",
         "--resilient",
+        "--color",
+        "NEVER",
     ]);
 
     if spec.verbosity.progress {
@@ -383,6 +533,34 @@ fn strip_log_prefix(line: &str) -> &str {
     }
 }
 
+/// `ERROR : text` / `NOTICE: text` -> `text`.
+fn strip_level(text: &str) -> &str {
+    match text.split_once(": ") {
+        Some((level, rest)) if matches!(level.trim(), "ERROR" | "NOTICE" | "CRITICAL" | "INFO" | "DEBUG") => rest.trim(),
+        _ => text.trim(),
+    }
+}
+
+/// Drops terminal colour codes (`ESC[…m`); older rclone versions colour some lines regardless of `--color`.
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if chars.next() == Some('[') {
+                for code in chars.by_ref() {
+                    if code.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// Recognises a `--stats-one-line` line such as
 /// `NOTICE:    1.2 MiB / 3.4 MiB, 35%, 500 KiB/s, ETA 4s` and returns its completed fraction
 /// (`0.0` while rclone reports `-` because nothing has been sized yet).
@@ -417,5 +595,58 @@ mod tests {
         assert_eq!(stats_fraction(text), Some(0.35));
         assert_eq!(stats_fraction("NOTICE: 0 B / 0 B, -, 0 B/s, ETA -"), Some(0.0));
         assert_eq!(stats_fraction("INFO  : file100%.txt: Copied (new)"), None);
+    }
+
+    #[test]
+    fn explains_lock_failures() {
+        let lines = [
+            "2026/10/08 10:14:13 NOTICE: Failed to bisync: \u{1b}[31mprior lock file found: \u{1b}[93m/home/u/.cache/rclone/bisync/a..b.lck\u{1b}[0m ",
+            "\u{1b}[0m\u{1b}[35mTip: this indicates that another bisync run (of these same paths) either is still running",
+            "2026/10/08 10:14:13 NOTICE: \u{1b}[31mBisync aborted. Please try again.\u{1b}[0m",
+        ];
+        let mut errors = ErrorLines::default();
+        let mut lock = None;
+        for line in lines {
+            let line = strip_ansi(line);
+            let text = strip_log_prefix(&line);
+            errors.note(text);
+            if let Some((_, path)) = text.split_once("prior lock file found: ") {
+                lock = Some(path.trim().to_string());
+            }
+        }
+        assert_eq!(
+            errors.summary().as_deref(),
+            Some("Failed to bisync: prior lock file found: /home/u/.cache/rclone/bisync/a..b.lck")
+        );
+        assert_eq!(lock.as_deref(), Some("/home/u/.cache/rclone/bisync/a..b.lck"));
+    }
+
+    #[test]
+    fn prefers_errors_over_the_generic_abort() {
+        let mut errors = ErrorLines::default();
+        errors.note("ERROR : photo.jpg: Failed to copy: permission denied");
+        errors.note("NOTICE: Bisync aborted. Please try again.");
+        assert_eq!(errors.summary().as_deref(), Some("photo.jpg: Failed to copy: permission denied"));
+
+        let mut aborted = ErrorLines::default();
+        aborted.note("NOTICE: Bisync aborted. Please try again.");
+        assert_eq!(aborted.summary().as_deref(), Some("Bisync aborted. Please try again."));
+    }
+
+    #[test]
+    fn reads_lock_owner() {
+        let raw = r#"{"Session":"/x","PID":"448404","TimeRenewed":"2026-10-06T00:00:54+02:00"}"#;
+        assert_eq!(lock_pid(raw), Some(448404));
+        assert_eq!(lock_pid("{}"), None);
+
+        let dir = std::env::temp_dir().join(format!("syncpair-lock-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join("a..b.lck");
+        // Our own PID is alive but is not rclone, so its lock counts as stale.
+        fs::write(&lock, format!(r#"{{"PID":"{}"}}"#, std::process::id())).unwrap();
+        assert!(matches!(lock_owner(&lock), LockOwner::Stale(_)));
+        fs::remove_file(&lock).unwrap();
+        assert!(matches!(lock_owner(&lock), LockOwner::Gone));
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

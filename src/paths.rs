@@ -14,6 +14,8 @@ pub struct AppPaths {
     pub state_dir: PathBuf,
     pub log_file: PathBuf,
     pub trash_dir: PathBuf,
+    /// rclone output saved for each failed folder, named after its log line's timestamp.
+    pub failures_dir: PathBuf,
     pub systemd_dir: PathBuf,
     pub service_file: PathBuf,
     pub timer_file: PathBuf,
@@ -36,6 +38,7 @@ impl AppPaths {
             config_dir,
             log_file: state_dir.join(LOG_FILE_NAME),
             trash_dir: state_dir.join("trash"),
+            failures_dir: state_dir.join("failures"),
             state_dir,
             service_file: systemd_dir.join(SERVICE_FILE_NAME),
             timer_file: systemd_dir.join(TIMER_FILE_NAME),

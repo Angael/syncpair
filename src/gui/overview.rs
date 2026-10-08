@@ -4,13 +4,16 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::{friendly_time, page_header, status_color, theme, App};
+use super::{friendly_time, page_header, status_color, theme, App, Details};
+use crate::logs::LogEntry;
 use crate::rclone::{ResyncMode, RunMode, RunOutcome, SyncEvent};
 
 /// Lines of rclone output kept for the live output panel.
 const OUTPUT_LIMIT: usize = 2_000;
 /// Number of past runs shown in the history strip.
 const HISTORY_LEN: usize = 30;
+/// Width kept free for Details / Sync now / More in the hero card.
+const HERO_ACTIONS_WIDTH: f32 = 330.0;
 
 pub enum EntryStatus {
     Pending,
@@ -28,6 +31,8 @@ pub struct EntryRun {
     pub status: EntryStatus,
     pub progress: f32,
     pub stats: String,
+    /// This folder's share of the run output, for its *Show output* button.
+    pub output: VecDeque<String>,
 }
 
 pub struct RunState {
@@ -38,6 +43,8 @@ pub struct RunState {
     pub cancel: Arc<AtomicBool>,
     pub started: Instant,
     pub outcome: Option<Result<RunOutcome, String>>,
+    /// Set when a folder fails so the output panel opens by itself once.
+    reveal_output: bool,
 }
 
 impl RunState {
@@ -52,12 +59,14 @@ impl RunState {
                     status: EntryStatus::Pending,
                     progress: 0.0,
                     stats: String::new(),
+                    output: VecDeque::new(),
                 })
                 .collect(),
             output: VecDeque::new(),
             cancel,
             started: Instant::now(),
             outcome: None,
+            reveal_output: false,
         }
     }
 
@@ -77,10 +86,12 @@ impl RunState {
                 }
             }
             SyncEvent::Output(line) => {
-                if self.output.len() == OUTPUT_LIMIT {
-                    self.output.pop_front();
+                if let Some(entry) =
+                    self.entries.iter_mut().find(|entry| matches!(entry.status, EntryStatus::Running))
+                {
+                    push_limited(&mut entry.output, line.clone());
                 }
-                self.output.push_back(line);
+                push_limited(&mut self.output, line);
             }
             SyncEvent::Progress(index, fraction, stats) => {
                 if let Some(entry) = self.entry_mut(index) {
@@ -96,6 +107,9 @@ impl RunState {
                         Err(error) if error == "Cancelled" => EntryStatus::Stopped,
                         Err(error) => EntryStatus::Failed(error),
                     };
+                    if matches!(entry.status, EntryStatus::Failed(_)) {
+                        self.reveal_output = true;
+                    }
                 }
             }
         }
@@ -180,6 +194,8 @@ impl App {
                 ui.label(RichText::new(icon).size(34.0).color(color));
                 ui.add_space(6.0);
                 ui.vertical(|ui| {
+                    // Leave room for the action buttons on the right so long reasons wrap before them.
+                    ui.set_max_width((ui.available_width() - HERO_ACTIONS_WIDTH).max(200.0));
                     ui.label(RichText::new(title).size(18.0).strong());
                     ui.label(RichText::new(detail).weak());
                 });
@@ -225,6 +241,14 @@ impl App {
                             self.request_run(RunMode::Normal, false);
                         }
                     });
+                    if !busy_elsewhere {
+                        let failure = self.last_run_failures().first().copied();
+                        if let Some(failure) = failure.filter(|entry| entry.details.is_some()) {
+                            if ui.button("Details").on_hover_text("Show rclone output").clicked() {
+                                self.details = Some(Details::from_log(failure));
+                            }
+                        }
+                    }
                 });
             });
 
@@ -277,13 +301,36 @@ impl App {
             Some(entry) => {
                 let when = entry.time.as_ref().map(friendly_time).unwrap_or_default();
                 if entry.level == "success" {
-                    ("✔", theme::SUCCESS, "Everything is backed up".into(), format!("Last sync {when}"))
-                } else {
-                    ("⚠", theme::DANGER, "Last sync had problems".into(), format!("{when} · {}", entry.message))
+                    return ("✔", theme::SUCCESS, "Everything is backed up".into(), format!("Last sync {when}"));
                 }
+                let failures = self.last_run_failures();
+                let detail = match failures.first() {
+                    Some(first) => {
+                        let reason = first.message.split_once(" failed for ").map_or(&*first.message, |(_, rest)| rest);
+                        let more = match failures.len() - 1 {
+                            0 => String::new(),
+                            extra => format!(" (+{extra} more in Activity)"),
+                        };
+                        format!("{when} · {reason}{more}")
+                    }
+                    None => format!("{when} · {}", entry.message),
+                };
+                ("⚠", theme::DANGER, "Last sync had problems".into(), detail)
             }
             None => ("○", theme::WARNING, "Not synced yet".into(), "Run your first sync to get started.".into()),
         }
+    }
+
+    /// Per-folder failures logged by the most recent real run, oldest first.
+    fn last_run_failures(&self) -> Vec<&LogEntry> {
+        let Some(end) = self.log.iter().rposition(LogEntry::is_run_result) else { return Vec::new() };
+        let Some((label, _)) = self.log[end].message.split_once(" finished") else { return Vec::new() };
+        let prefix = format!("{label} failed for ");
+        let start = self.log[..end].iter().rposition(LogEntry::is_run_result).map_or(0, |index| index + 1);
+        self.log[start..end]
+            .iter()
+            .filter(|entry| entry.level == "error" && entry.message.starts_with(&prefix))
+            .collect()
     }
 
     fn schedule_card(&mut self, ui: &mut egui::Ui) {
@@ -394,19 +441,30 @@ impl App {
                     });
                 });
                 if let Some(EntryStatus::Failed(error)) = state.map(|state| &state.status) {
-                    ui.label(RichText::new(error).small().color(theme::DANGER));
+                    ui.horizontal(|ui| {
+                        if ui.small_button("Show output").clicked() {
+                            self.details = state.map(|state| Details {
+                                title: format!("{} failed", entry.local),
+                                message: error.clone(),
+                                output: state.output.iter().cloned().collect(),
+                            });
+                        }
+                        ui.add(egui::Label::new(RichText::new(error).color(theme::DANGER)).wrap());
+                    });
                 }
             }
         });
     }
 
     fn output_card(&mut self, ui: &mut egui::Ui) {
-        let Some(run) = &self.run else { return };
+        let Some(run) = &mut self.run else { return };
+        let reveal = std::mem::take(&mut run.reveal_output);
         theme::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
             egui::CollapsingHeader::new(RichText::new("rclone output").strong())
                 .id_salt("rclone-output")
                 .default_open(false)
+                .open(reveal.then_some(true))
                 .show(ui, |ui| {
                     let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
                     egui::Frame::new()
@@ -415,7 +473,7 @@ impl App {
                         .inner_margin(10)
                         .show(ui, |ui| {
                             egui::ScrollArea::both()
-                                .max_height(260.0)
+                                .max_height(480.0)
                                 .auto_shrink([false, true])
                                 .stick_to_bottom(true)
                                 .show_rows(ui, row_height, run.output.len(), |ui, rows| {
@@ -507,4 +565,11 @@ fn entry_status(ui: &mut egui::Ui, state: Option<&EntryRun>) {
             ui.label(RichText::new("Skipped").small().weak());
         }
     }
+}
+
+fn push_limited(lines: &mut VecDeque<String>, line: String) {
+    if lines.len() == OUTPUT_LIMIT {
+        lines.pop_front();
+    }
+    lines.push_back(line);
 }

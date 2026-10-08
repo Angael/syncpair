@@ -1,6 +1,6 @@
 use eframe::egui::{self, Color32, RichText};
 
-use super::{friendly_time, page_header, theme, App};
+use super::{friendly_time, page_header, theme, App, Details};
 use crate::logs::LogEntry;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -61,6 +61,7 @@ impl App {
             .filter(|entry| needle.is_empty() || entry.message.to_lowercase().contains(&needle))
             .collect();
 
+        let mut open = None;
         theme::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
             if rows.is_empty() {
@@ -84,14 +85,27 @@ impl App {
                                     ui.label(RichText::new(when).weak());
                                 },
                             );
-                            let text = RichText::new(&entry.message);
-                            let text = if entry.level.is_empty() { text.monospace().weak() } else { text };
-                            ui.add(egui::Label::new(text).truncate())
-                                .on_hover_text(&entry.message);
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if entry.details.is_some()
+                                    && ui.small_button("Details").on_hover_text("Show rclone output").clicked()
+                                {
+                                    open = Some(*entry);
+                                }
+                                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    let text = RichText::new(&entry.message);
+                                    let text = if entry.level.is_empty() { text.monospace().weak() } else { text };
+                                    ui.add(egui::Label::new(text).truncate())
+                                        .on_hover_text(&entry.message);
+                                });
+                            });
                         });
                     }
                 });
         });
+
+        if let Some(entry) = open {
+            self.details = Some(Details::from_log(entry));
+        }
     }
 }
 

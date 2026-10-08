@@ -95,6 +95,27 @@ enum Msg {
     PickedFolder { row: Option<usize>, path: Option<PathBuf> },
 }
 
+/// A failure explained in full: the error and the rclone output behind it.
+pub struct Details {
+    pub title: String,
+    pub message: String,
+    pub output: Vec<String>,
+}
+
+impl Details {
+    /// A logged failure with the rclone output saved for it.
+    fn from_log(entry: &LogEntry) -> Self {
+        let output = entry
+            .details
+            .as_ref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|text| text.lines().map(str::to_string).collect())
+            .unwrap_or_default();
+        let when = entry.time.as_ref().map(friendly_time).unwrap_or_default();
+        Self { title: format!("Failure · {when}"), message: entry.message.clone(), output }
+    }
+}
+
 struct Toast {
     text: String,
     error: bool,
@@ -124,6 +145,7 @@ pub struct App {
     folders: FoldersPage,
     activity: activity::ActivityPage,
     trash: TrashPage,
+    details: Option<Details>,
     toast: Option<Toast>,
 }
 
@@ -149,6 +171,7 @@ impl App {
             folders: FoldersPage::default(),
             activity: activity::ActivityPage::default(),
             trash: TrashPage::default(),
+            details: None,
             toast: None,
         };
         app.reload_config();
@@ -355,6 +378,52 @@ impl App {
         }
     }
 
+    fn details_modal(&mut self, ctx: &egui::Context) {
+        let Some(details) = &self.details else { return };
+        let screen = ctx.content_rect();
+        let response = egui::Modal::new(egui::Id::new("details-modal")).show(ctx, |ui| {
+            ui.set_width((screen.width() * 0.85).min(1100.0));
+            ui.heading(&details.title);
+            ui.add_space(4.0);
+            ui.label(RichText::new(&details.message).color(theme::DANGER));
+            ui.add_space(8.0);
+            egui::Frame::new()
+                .fill(ui.visuals().extreme_bg_color)
+                .corner_radius(8)
+                .inner_margin(10)
+                .show(ui, |ui| {
+                    // Lines wrap, so rows differ in height; transcripts are capped, so draw them all.
+                    egui::ScrollArea::vertical()
+                        .max_height(screen.height() * 0.6)
+                        .auto_shrink([false, true])
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for line in &details.output {
+                                ui.label(RichText::new(line).monospace());
+                            }
+                        });
+                });
+            if details.output.is_empty() {
+                ui.label(RichText::new("No rclone output was recorded.").weak());
+            }
+            ui.add_space(12.0);
+            let mut close = false;
+            ui.horizontal(|ui| {
+                if ui.button("Copy all").clicked() {
+                    let text = format!("{}\n\n{}", details.message, details.output.join("\n"));
+                    ui.ctx().copy_text(text);
+                }
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+            close
+        });
+        if response.inner || response.should_close() {
+            self.details = None;
+        }
+    }
+
     fn sidebar(&mut self, ui: &mut egui::Ui) {
         let frame = egui::Frame::new()
             .fill(ui.visuals().extreme_bg_color)
@@ -454,6 +523,7 @@ impl eframe::App for App {
 
         self.confirm_run_modal(&ctx);
         self.confirm_quit_modal(&ctx);
+        self.details_modal(&ctx);
         self.toast(&ctx);
     }
 }
